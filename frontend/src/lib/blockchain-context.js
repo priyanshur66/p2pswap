@@ -83,7 +83,11 @@ export function BlockchainProvider({ children }) {
 
   // Set up wallet event listeners
   const setupWalletEventListeners = () => {
-    if (!window.ethereum) return;
+    const ethereumProvider = window.ethereum;
+    if (!ethereumProvider) {
+      console.warn("Cannot set up wallet event listeners - no ethereum provider found");
+      return;
+    }
     
     console.log("Setting up wallet event listeners");
     
@@ -93,137 +97,237 @@ export function BlockchainProvider({ children }) {
       window.location.reload();
     };
     
+    // Try multiple ways to remove and add listeners for different wallet implementations
+    const safeRemoveListener = (event, handler) => {
+      try {
+        // Try standard method first
+        ethereumProvider.removeListener(event, handler);
+      } catch (e1) {
+        console.warn(`Standard removeListener for ${event} failed:`, e1);
+        try {
+          // Some wallets use off instead
+          if (typeof ethereumProvider.off === 'function') {
+            ethereumProvider.off(event, handler);
+          }
+        } catch (e2) {
+          console.warn(`Alternative off method for ${event} failed:`, e2);
+        }
+      }
+    };
+    
+    const safeAddListener = (event, handler) => {
+      try {
+        // Try standard method first
+        ethereumProvider.on(event, handler);
+        console.log(`Added listener for ${event} event`);
+      } catch (e1) {
+        console.warn(`Standard on method for ${event} failed:`, e1);
+        try {
+          // Some wallets use addListener instead
+          if (typeof ethereumProvider.addListener === 'function') {
+            ethereumProvider.addListener(event, handler);
+            console.log(`Added listener for ${event} using addListener`);
+          }
+        } catch (e2) {
+          console.warn(`Alternative addListener method for ${event} failed:`, e2);
+        }
+      }
+    };
+    
     // Remove existing listeners first to avoid duplicates
-    window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
-    window.ethereum.removeListener('chainChanged', handleChainChanged);
+    safeRemoveListener('accountsChanged', handleAccountsChanged);
+    safeRemoveListener('chainChanged', handleChainChanged);
     
     // Add listeners
-    window.ethereum.on('accountsChanged', handleAccountsChanged);
-    window.ethereum.on('chainChanged', handleChainChanged);
+    safeAddListener('accountsChanged', handleAccountsChanged);
+    safeAddListener('chainChanged', handleChainChanged);
     
     console.log("Wallet event listeners set up successfully");
   };
 
   // Connect to wallet
   const connectWallet = async () => {
-    if (window.ethereum) {
-      try {
-        console.log("Connecting wallet...");
-        
-        // Force reset of any existing connections
-        if (isConnected) {
-          console.log("Resetting existing connection before reconnecting");
-          setProvider(null);
-          setSigner(null);
-          setSwapContract(null);
-          setAccount(null);
-          setIsConnected(false);
+    console.log("Connect wallet function called");
+    
+    // Check for ethereum object with fallbacks for container environments
+    const getEthereumProvider = () => {
+      if (window.ethereum) return window.ethereum;
+      
+      // Check for alternate injection methods in Bolt/containers
+      const possibleProviders = [
+        window.ethereum,
+        window.web3?.currentProvider,
+        window._ethereum, // Some containers use this
+        window.__ethereum // Some containers use this
+      ];
+      
+      for (const provider of possibleProviders) {
+        if (provider) {
+          console.log("Found alternate ethereum provider:", provider);
+          // Add it to window.ethereum for consistency with the rest of the code
+          window.ethereum = provider;
+          return provider;
         }
-        
-        // Create new provider with retry logic for sandboxed environments
-        let provider;
-        let retryCount = 0;
-        
-        while (retryCount < 3) {
-          try {
-            provider = new ethers.BrowserProvider(window.ethereum);
-            break;
-          } catch (providerError) {
-            console.warn(`Provider creation attempt ${retryCount + 1} failed:`, providerError);
-            retryCount++;
-            if (retryCount >= 3) throw providerError;
-            await new Promise(r => setTimeout(r, 500)); // Wait 500ms before retry
-          }
-        }
-        
-        const network = await provider.getNetwork();
-        setChainId(network.chainId);
-        
-        // Request accounts with explicit error handling for sandboxed environments
-        let accounts;
-        try {
-          accounts = await provider.send("eth_requestAccounts", []);
-        } catch (accountsError) {
-          console.warn("eth_requestAccounts failed, trying alternate method:", accountsError);
-          accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-        }
-        
-        if (!accounts || accounts.length === 0) {
-          throw new Error("No accounts returned after wallet connection request");
-        }
-        
-        // Create signer with retry logic
-        let signer;
-        retryCount = 0;
-        
-        while (retryCount < 3) {
-          try {
-            signer = await provider.getSigner();
-            break;
-          } catch (signerError) {
-            console.warn(`Signer creation attempt ${retryCount + 1} failed:`, signerError);
-            retryCount++;
-            if (retryCount >= 3) throw signerError;
-            await new Promise(r => setTimeout(r, 500)); // Wait 500ms before retry
-          }
-        }
-        
-        const swapContract = new ethers.Contract(swapAddress, swapAbi, signer);
-        
-        // Set state
-        setProvider(provider);
-        setSigner(signer);
-        setSwapContract(swapContract);
-        setAccount(accounts[0]);
-        setIsConnected(true);
-
-        // Set up wallet event listeners after successful connection
-        setupWalletEventListeners();
-
-        toast({
-          title: "Wallet Connected",
-          description: `Connected to ${accounts[0].substring(0, 6)}...${accounts[0].substring(38)}`,
-        });
-
-        // Set up event listeners after the state is updated
-        setTimeout(async () => {
-          try {
-            // Start listening for events
-            console.log("Setting up event listeners...");
-            listenForEvents(swapContract);
-            
-            // Fetch past events
-            console.log("Fetching past events after connecting wallet");
-            try {
-              const pastEvents = await fetchPastEvents(swapContract);
-              if (pastEvents && pastEvents.length > 0) {
-                console.log(`Setting ${pastEvents.length} past events to state`);
-                setEvents(pastEvents);
-              } else {
-                console.log("No past events found");
-              }
-            } catch (pastEventsError) {
-              console.error("Error fetching past events during connect:", pastEventsError);
-            }
-          } catch (eventError) {
-            console.error("Error setting up events:", eventError);
-          }
-        }, 100); // Small delay to ensure state is updated
-        
-        return true;
-      } catch (error) {
-        console.error("Error connecting to wallet:", error);
-        toast({
-          title: "Connection Error",
-          description: error.message,
-          variant: "destructive",
-        });
-        return false;
       }
-    } else {
+      
+      return null;
+    };
+    
+    const ethereumProvider = getEthereumProvider();
+    
+    if (!ethereumProvider) {
+      console.error("No ethereum provider found in window object");
       toast({
         title: "Wallet Not Found",
         description: "Please install MetaMask or another Ethereum wallet",
+        variant: "destructive",
+      });
+      return false;
+    }
+    
+    try {
+      console.log("Connecting wallet...");
+      console.log("ethereum provider object:", Object.keys(ethereumProvider));
+      
+      // Force reset of any existing connections
+      if (isConnected) {
+        console.log("Resetting existing connection before reconnecting");
+        setProvider(null);
+        setSigner(null);
+        setSwapContract(null);
+        setAccount(null);
+        setIsConnected(false);
+      }
+        
+      // Create new provider with retry logic for sandboxed environments
+      let provider;
+      let retryCount = 0;
+      
+      while (retryCount < 3) {
+        try {
+          provider = new ethers.BrowserProvider(ethereumProvider);
+          break;
+        } catch (providerError) {
+          console.warn(`Provider creation attempt ${retryCount + 1} failed:`, providerError);
+          retryCount++;
+          if (retryCount >= 3) throw providerError;
+          await new Promise(r => setTimeout(r, 500)); // Wait 500ms before retry
+        }
+      }
+      
+      // Multiple methods to request accounts for different environments
+      const requestAccounts = async () => {
+        const methods = [
+          // Standard method
+          async () => provider.send("eth_requestAccounts", []),
+          // Direct request method
+          async () => ethereumProvider.request({ method: 'eth_requestAccounts' }),
+          // Legacy web3 method
+          async () => {
+            if (window.web3 && window.web3.eth && window.web3.eth.getAccounts) {
+              return new Promise((resolve, reject) => {
+                window.web3.eth.getAccounts((error, accounts) => {
+                  if (error) reject(error);
+                  else resolve(accounts);
+                });
+              });
+            }
+            throw new Error("Legacy web3 not available");
+          },
+          // Last resort - try to get already connected accounts
+          async () => ethereumProvider.request({ method: 'eth_accounts' })
+        ];
+        
+        let lastError;
+        for (const method of methods) {
+          try {
+            const accounts = await method();
+            if (accounts && accounts.length > 0) return accounts;
+          } catch (error) {
+            lastError = error;
+            console.warn("Account request method failed, trying next method:", error);
+          }
+        }
+        
+        throw lastError || new Error("All account request methods failed");
+      };
+      
+      // Try to get accounts
+      const accounts = await requestAccounts();
+      
+      if (!accounts || accounts.length === 0) {
+        throw new Error("No accounts returned after wallet connection request");
+      }
+      
+      console.log("Successfully got accounts:", accounts);
+      
+      const network = await provider.getNetwork();
+      setChainId(network.chainId);
+      
+      // Create signer with retry logic
+      let signer;
+      retryCount = 0;
+      
+      while (retryCount < 3) {
+        try {
+          signer = await provider.getSigner();
+          break;
+        } catch (signerError) {
+          console.warn(`Signer creation attempt ${retryCount + 1} failed:`, signerError);
+          retryCount++;
+          if (retryCount >= 3) throw signerError;
+          await new Promise(r => setTimeout(r, 500)); // Wait 500ms before retry
+        }
+      }
+      
+      const swapContract = new ethers.Contract(swapAddress, swapAbi, signer);
+      
+      // Set state
+      setProvider(provider);
+      setSigner(signer);
+      setSwapContract(swapContract);
+      setAccount(accounts[0]);
+      setIsConnected(true);
+
+      // Set up wallet event listeners after successful connection
+      setupWalletEventListeners();
+
+      toast({
+        title: "Wallet Connected",
+        description: `Connected to ${accounts[0].substring(0, 6)}...${accounts[0].substring(38)}`,
+      });
+
+      // Set up event listeners after the state is updated
+      setTimeout(async () => {
+        try {
+          // Start listening for events
+          console.log("Setting up event listeners...");
+          listenForEvents(swapContract);
+          
+          // Fetch past events
+          console.log("Fetching past events after connecting wallet");
+          try {
+            const pastEvents = await fetchPastEvents(swapContract);
+            if (pastEvents && pastEvents.length > 0) {
+              console.log(`Setting ${pastEvents.length} past events to state`);
+              setEvents(pastEvents);
+            } else {
+              console.log("No past events found");
+            }
+          } catch (pastEventsError) {
+            console.error("Error fetching past events during connect:", pastEventsError);
+          }
+        } catch (eventError) {
+          console.error("Error setting up events:", eventError);
+        }
+      }, 100); // Small delay to ensure state is updated
+      
+      return true;
+    } catch (error) {
+      console.error("Error connecting to wallet:", error);
+      toast({
+        title: "Connection Error",
+        description: error.message,
         variant: "destructive",
       });
       return false;
@@ -1339,14 +1443,98 @@ export function BlockchainProvider({ children }) {
     console.log("Blockchain context initialization");
     let cleanupFunctions = [];
     
-    if (window.ethereum) {
-      console.log("Ethereum provider detected");
+    // Check for ethereum object with fallbacks for container environments
+    const getEthereumProvider = () => {
+      if (window.ethereum) return window.ethereum;
+      
+      // Check for alternate injection methods in Bolt/containers
+      const possibleProviders = [
+        window.ethereum,
+        window.web3?.currentProvider,
+        window._ethereum, // Some containers use this
+        window.__ethereum // Some containers use this
+      ];
+      
+      for (const provider of possibleProviders) {
+        if (provider) {
+          console.log("Found alternate ethereum provider:", provider);
+          // Add it to window.ethereum for consistency with the rest of the code
+          window.ethereum = provider;
+          return provider;
+        }
+      }
+      
+      return null;
+    };
+    
+    const ethereumProvider = getEthereumProvider();
+    
+    if (ethereumProvider) {
+      console.log("Ethereum provider detected:", Object.keys(ethereumProvider).slice(0, 5));
       
       const checkConnection = async () => {
         try {
           console.log("Checking existing connection");
-          const provider = new ethers.BrowserProvider(window.ethereum);
-          const accounts = await provider.listAccounts();
+          
+          // Try to create BrowserProvider with retry
+          let provider;
+          let retryCount = 0;
+          
+          while (retryCount < 3) {
+            try {
+              provider = new ethers.BrowserProvider(ethereumProvider);
+              break;
+            } catch (providerError) {
+              console.warn(`Provider creation attempt ${retryCount + 1} failed:`, providerError);
+              retryCount++;
+              if (retryCount >= 3) {
+                console.error("Failed to create provider after 3 attempts");
+                return;
+              }
+              await new Promise(r => setTimeout(r, 500)); // Wait 500ms before retry
+            }
+          }
+          
+          // Multiple methods to get accounts in different environments
+          const getAccounts = async () => {
+            const methods = [
+              // Standard ethers method
+              async () => provider.listAccounts(),
+              // Direct request method
+              async () => {
+                const accounts = await ethereumProvider.request({ method: 'eth_accounts' });
+                return accounts.map(addr => ({ address: addr }));
+              },
+              // Legacy web3 method
+              async () => {
+                if (window.web3 && window.web3.eth && window.web3.eth.getAccounts) {
+                  return new Promise((resolve, reject) => {
+                    window.web3.eth.getAccounts((error, accounts) => {
+                      if (error) reject(error);
+                      else resolve(accounts.map(addr => ({ address: addr })));
+                    });
+                  });
+                }
+                throw new Error("Legacy web3 not available");
+              }
+            ];
+            
+            let lastError;
+            for (const method of methods) {
+              try {
+                const accounts = await method();
+                if (accounts && accounts.length > 0) return accounts;
+              } catch (error) {
+                lastError = error;
+                console.warn("Account get method failed, trying next method:", error);
+              }
+            }
+            
+            console.error("All account get methods failed:", lastError);
+            return [];
+          };
+          
+          const accounts = await getAccounts();
           
           console.log("Found accounts:", accounts.length > 0 ? `${accounts.length} accounts` : "No accounts");
           
@@ -1491,11 +1679,33 @@ export function BlockchainProvider({ children }) {
       
       // Add cleanup function for wallet event listeners
       cleanupFunctions.push(() => {
-        if (window.ethereum) {
+        const ethereumProvider = window.ethereum;
+        if (ethereumProvider) {
+          // Try multiple ways to remove listeners for different wallet implementations
+          const safeRemoveAllListeners = (event) => {
+            try {
+              // Try standard method first
+              if (typeof ethereumProvider.removeAllListeners === 'function') {
+                ethereumProvider.removeAllListeners(event);
+                console.log(`Removed all listeners for ${event}`);
+              } else {
+                console.warn(`removeAllListeners method not available for ${event}`);
+                // Try to remove specific handlers we know about
+                if (event === 'accountsChanged') {
+                  safeRemoveListener('accountsChanged', handleAccountsChanged);
+                } else if (event === 'chainChanged') {
+                  safeRemoveListener('chainChanged', handleChainChanged);
+                }
+              }
+            } catch (error) {
+              console.warn(`Error removing listeners for ${event}:`, error);
+            }
+          };
+          
           // Use the same handler references to ensure proper cleanup
           console.log("Removing wallet event listeners");
-          window.ethereum.removeAllListeners('accountsChanged');
-          window.ethereum.removeAllListeners('chainChanged');
+          safeRemoveAllListeners('accountsChanged');
+          safeRemoveAllListeners('chainChanged');
         }
       });
     } else {
