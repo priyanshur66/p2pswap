@@ -22,62 +22,141 @@ export function BlockchainProvider({ children }) {
   const { toast } = useToast();
 
   // Handle account changes - moved outside setupWalletEventListeners to be accessible from polling
-  const handleAccountsChanged = (accounts) => {
+  const handleAccountsChanged = async (accounts) => {
     console.log("Accounts changed:", accounts);
+    
+    // Get the current account from state for comparison
+    const currentAccount = account;
+    const newAccount = accounts && accounts.length > 0 ? accounts[0] : null;
+    
+    // Check if this is a real account change
+    if (newAccount && currentAccount && 
+        newAccount.toLowerCase() === currentAccount.toLowerCase()) {
+      console.log("Same account detected, no need to reinitialize");
+      return;
+    }
+    
     // Immediately clear events when account changes
     setEvents([]);
     
     if (accounts.length > 0) {
       // Completely reinitialize everything when account changes
-      (async () => {
-        try {
-          console.log("Reinitializing provider, signer, and contract for new account");
-          
-          // Create a fresh provider
-          const newProvider = new ethers.BrowserProvider(window.ethereum);
-          
-          // Get network
-          const network = await newProvider.getNetwork();
-          setChainId(network.chainId);
-          
-          // Create a fresh signer for the new account
+      try {
+        console.log("Reinitializing provider, signer, and contract for new account");
+        
+        // Create a fresh provider
+        const newProvider = new ethers.BrowserProvider(window.ethereum);
+        
+        // Get network
+        const network = await newProvider.getNetwork();
+        setChainId(network.chainId);
+        
+        // Create a fresh signer for the new account
+        const newSigner = await newProvider.getSigner();
+        
+        // Create a fresh contract
+        const newSwapContract = new ethers.Contract(swapAddress, swapAbi, newSigner);
+        
+        // Set all state
+        setProvider(newProvider);
+        setSigner(newSigner);
+        setSwapContract(newSwapContract);
+        setAccount(accounts[0]);
+        setIsConnected(true); // Make sure to set isConnected to true
+        
+        console.log("New signer address:", await newSigner.getAddress());
+        console.log("Updated state with new account:", accounts[0]);
+        
+        // Set up fresh event listeners with the new contract
+        listenForEvents(newSwapContract);
+        
+        // Fetch past events for the new account
+        fetchPastEvents(newSwapContract)
+          .then(pastEvents => {
+            if (pastEvents && pastEvents.length > 0) {
+              console.log(`Setting ${pastEvents.length} events after account change`);
+              setEvents(pastEvents);
+            }
+          })
+          .catch(error => {
+            console.error("Error fetching events after account change:", error);
+          });
+      } catch (error) {
+        console.error("Error reinitializing after account change:", error);
+        // In case of critical failure, try to disconnect
+        disconnectWallet();
+      }
+    } else {
+      disconnectWallet();
+    }
+  };
+
+  // Handle chain/network changes
+  const handleChainChanged = async (_chainId) => {
+    console.log("Chain changed to:", _chainId);
+    
+    try {
+      // Get chain ID in a normalized format
+      const newChainId = typeof _chainId === 'string' && _chainId.startsWith('0x') 
+        ? BigInt(_chainId) 
+        : BigInt(_chainId);
+      
+      // If we have the current chain ID in state, compare to avoid unnecessary reloads
+      if (chainId) {
+        const currentChainIdBigInt = typeof chainId === 'bigint' ? chainId : BigInt(chainId.toString());
+        
+        if (newChainId === currentChainIdBigInt) {
+          console.log("Same chain detected, no need to reload");
+          return;
+        }
+      }
+      
+      // Try to handle chain change gracefully instead of a full page reload
+      try {
+        console.log("Reinitializing provider and contracts for new chain");
+        
+        // Create fresh provider, signer and contract
+        const newProvider = new ethers.BrowserProvider(window.ethereum);
+        const network = await newProvider.getNetwork();
+        setChainId(network.chainId);
+        
+        // Only recreate signer and contract if we have an account
+        if (account) {
           const newSigner = await newProvider.getSigner();
-          
-          // Create a fresh contract
           const newSwapContract = new ethers.Contract(swapAddress, swapAbi, newSigner);
           
-          // Set all state
+          // Update state
           setProvider(newProvider);
           setSigner(newSigner);
           setSwapContract(newSwapContract);
-          setAccount(accounts[0]);
-          setIsConnected(true); // Make sure to set isConnected to true
           
-          console.log("New signer address:", await newSigner.getAddress());
-          console.log("Updated state with new account:", accounts[0]);
-          
-          // Set up fresh event listeners with the new contract
+          // Reset and restart event listeners
           listenForEvents(newSwapContract);
           
-          // Fetch past events for the new account
+          // Fetch past events for the new chain
           fetchPastEvents(newSwapContract)
             .then(pastEvents => {
-              if (pastEvents && pastEvents.length > 0) {
-                console.log(`Setting ${pastEvents.length} events after account change`);
-                setEvents(pastEvents);
-              }
+              setEvents(pastEvents || []);
             })
-            .catch(error => {
-              console.error("Error fetching events after account change:", error);
-            });
-        } catch (error) {
-          console.error("Error reinitializing after account change:", error);
-          // In case of critical failure, try to disconnect
-          disconnectWallet();
+            .catch(console.error);
+          
+          // Notify user
+          toast({
+            title: "Network Changed",
+            description: `Connected to ${network.name || 'new network'}`,
+          });
+          
+          return;
         }
-      })();
-    } else {
-      disconnectWallet();
+      } catch (error) {
+        console.error("Error handling chain change gracefully, falling back to page reload:", error);
+      }
+      
+      // If graceful handling fails, fall back to page reload
+      window.location.reload();
+    } catch (error) {
+      console.error("Error in chain change handler:", error);
+      window.location.reload();
     }
   };
 
@@ -91,23 +170,19 @@ export function BlockchainProvider({ children }) {
     
     console.log("Setting up wallet event listeners");
     
-    // Handle chain changes
-    const handleChainChanged = (_chainId) => {
-      console.log("Chain changed to:", _chainId);
-      window.location.reload();
-    };
-    
     // Try multiple ways to remove and add listeners for different wallet implementations
     const safeRemoveListener = (event, handler) => {
       try {
         // Try standard method first
         ethereumProvider.removeListener(event, handler);
+        console.log(`Removed listener for ${event} event`);
       } catch (e1) {
         console.warn(`Standard removeListener for ${event} failed:`, e1);
         try {
           // Some wallets use off instead
           if (typeof ethereumProvider.off === 'function') {
             ethereumProvider.off(event, handler);
+            console.log(`Removed listener for ${event} using off method`);
           }
         } catch (e2) {
           console.warn(`Alternative off method for ${event} failed:`, e2);
@@ -120,6 +195,7 @@ export function BlockchainProvider({ children }) {
         // Try standard method first
         ethereumProvider.on(event, handler);
         console.log(`Added listener for ${event} event`);
+        return true;
       } catch (e1) {
         console.warn(`Standard on method for ${event} failed:`, e1);
         try {
@@ -127,10 +203,27 @@ export function BlockchainProvider({ children }) {
           if (typeof ethereumProvider.addListener === 'function') {
             ethereumProvider.addListener(event, handler);
             console.log(`Added listener for ${event} using addListener`);
+            return true;
           }
         } catch (e2) {
           console.warn(`Alternative addListener method for ${event} failed:`, e2);
         }
+        
+        try {
+          // Last resort - try RPC provider specific event listener
+          if (typeof ethereumProvider.on === 'function') {
+            ethereumProvider.on(event, (...args) => {
+              console.log(`${event} event triggered with:`, args);
+              handler(...args);
+            });
+            console.log(`Added fallback listener for ${event}`);
+            return true;
+          }
+        } catch (e3) {
+          console.warn(`Fallback listener for ${event} failed:`, e3);
+        }
+        
+        return false;
       }
     };
     
@@ -138,11 +231,24 @@ export function BlockchainProvider({ children }) {
     safeRemoveListener('accountsChanged', handleAccountsChanged);
     safeRemoveListener('chainChanged', handleChainChanged);
     
-    // Add listeners
-    safeAddListener('accountsChanged', handleAccountsChanged);
-    safeAddListener('chainChanged', handleChainChanged);
+    // Add listeners with enhanced error handling
+    const accountsResult = safeAddListener('accountsChanged', handleAccountsChanged);
+    const chainResult = safeAddListener('chainChanged', handleChainChanged);
     
-    console.log("Wallet event listeners set up successfully");
+    // Log success status
+    console.log("Wallet event listeners setup results:", {
+      accountsChanged: accountsResult ? "success" : "failed",
+      chainChanged: chainResult ? "success" : "failed"
+    });
+    
+    // Store setup status for polling fallback
+    window._walletEventListenersActive = accountsResult && chainResult;
+    
+    if (!accountsResult || !chainResult) {
+      console.warn("Some wallet event listeners failed to set up. Polling will be used as fallback.");
+    } else {
+      console.log("Wallet event listeners set up successfully");
+    }
   };
 
   // Connect to wallet
@@ -335,18 +441,51 @@ export function BlockchainProvider({ children }) {
   };
 
   // Disconnect wallet
-  const disconnectWallet = () => {
-    setProvider(null);
-    setSigner(null);
-    setSwapContract(null);
-    setAccount(null);
-    setIsConnected(false);
-    setChainId(null);
+  const disconnectWallet = async () => {
+    console.log("Disconnect wallet function called");
     
-    toast({
-      title: "Wallet Disconnected",
-      description: "You have been disconnected from your wallet",
-    });
+    try {
+      // Clear all event listeners before disconnecting
+      if (swapContract) {
+        try {
+          console.log("Removing contract event listeners");
+          swapContract.removeAllListeners();
+        } catch (error) {
+          console.warn("Error removing contract listeners:", error);
+        }
+      }
+
+      // Force reset wallet connection state
+      console.log("Resetting connection state");
+      setProvider(null);
+      setSigner(null);
+      setSwapContract(null);
+      setAccount(null);
+      setIsConnected(false);
+      setChainId(null);
+      setEvents([]);
+      
+      toast({
+        title: "Wallet Disconnected",
+        description: "You have been disconnected from your wallet",
+      });
+      
+      // Some wallet implementations require an explicit disconnect
+      // This will be a no-op on wallets that don't support it
+      if (window.ethereum && typeof window.ethereum.disconnect === 'function') {
+        try {
+          await window.ethereum.disconnect();
+          console.log("Explicitly disconnected from wallet provider");
+        } catch (disconnectError) {
+          console.warn("Provider doesn't support explicit disconnect:", disconnectError);
+        }
+      }
+      
+      return true;
+    } catch (error) {
+      console.error("Error during wallet disconnect:", error);
+      return false;
+    }
   };
 
   // Listen for contract events
@@ -1598,18 +1737,25 @@ export function BlockchainProvider({ children }) {
         try {
           if (window.ethereum) {
             // Check for accounts
-            const accounts = await window.ethereum.request({ method: 'eth_accounts' });
-            
-            // Check for network/chain
+            let accounts;
             let currentChainId;
+            
             try {
+              // Get accounts
+              accounts = await window.ethereum.request({ method: 'eth_accounts' });
+              
+              // Get current chain ID
               currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
-            } catch (chainError) {
-              console.warn("Failed to get chainId directly:", chainError);
+            } catch (requestError) {
+              console.warn("Error requesting account/chain data:", requestError);
+              return; // Skip this polling cycle if there's an error
             }
             
+            // Don't process further if we don't have the necessary data
+            if (!accounts) return;
+            
             // Account change detection
-            if (accounts && accounts.length > 0) {
+            if (accounts.length > 0) {
               const currentMetaMaskAccount = accounts[0];
               const currentAppAccount = account;
               
@@ -1624,33 +1770,51 @@ export function BlockchainProvider({ children }) {
                 });
                 
                 // Use the handleAccountsChanged function to update the account
-                handleAccountsChanged(accounts);
+                await handleAccountsChanged(accounts);
+              } else if (currentMetaMaskAccount && !currentAppAccount) {
+                // We have an account in wallet but not in app state (reconnection case)
+                console.log("Detected wallet account not in app state, reconnecting");
+                await handleAccountsChanged(accounts);
               }
             } else if (account && accounts.length === 0) {
               // User disconnected all accounts in wallet
               console.log("All accounts disconnected in wallet");
-              disconnectWallet();
+              await disconnectWallet();
             }
             
             // Network change detection
-            if (currentChainId && chainId && currentChainId !== chainId.toString()) {
-              console.log("Chain change detected via polling", {
-                appChainId: chainId,
-                walletChainId: currentChainId
-              });
+            if (currentChainId && chainId) {
+              // Convert to comparable format (both BigInt)
+              const currentChainIdBigInt = typeof currentChainId === 'string' && currentChainId.startsWith('0x') 
+                ? BigInt(currentChainId) 
+                : BigInt(currentChainId);
+                
+              const appChainIdBigInt = typeof chainId === 'bigint' 
+                ? chainId 
+                : BigInt(chainId.toString());
               
-              // Handle chain change similar to the event handler
-              window.location.reload();
+              if (currentChainIdBigInt !== appChainIdBigInt) {
+                console.log("Chain change detected via polling", {
+                  appChainId: chainId.toString(),
+                  walletChainId: currentChainId
+                });
+                
+                // Handle chain change
+                await handleChainChanged(currentChainId);
+              }
             }
             
-            // Force refresh provider state every 10 polls if connected
-            // This helps in sandboxed environments where events might not propagate
+            // Additional periodic state refresh - runs roughly every 10 seconds
+            // This helps maintain state consistency in container environments
             if (isConnected && account && (Date.now() % 10000 < 1000)) {
               try {
+                console.log("Running periodic state verification");
+                
+                // Verify network
                 const provider = new ethers.BrowserProvider(window.ethereum);
                 const network = await provider.getNetwork();
                 
-                // Only update if necessary
+                // Check if chain ID needs update
                 if (network.chainId.toString() !== chainId?.toString()) {
                   console.log("Updating chain ID during periodic check", {
                     oldChainId: chainId,
@@ -1659,10 +1823,16 @@ export function BlockchainProvider({ children }) {
                   setChainId(network.chainId);
                 }
                 
-                // Verify signer is still valid
-                verifySigner().catch(console.error);
+                // Verify signer matches current account
+                if (signer) {
+                  const signerAddress = await signer.getAddress();
+                  if (signerAddress.toLowerCase() !== account.toLowerCase()) {
+                    console.log("Signer address doesn't match current account, reinitializing");
+                    await handleAccountsChanged(accounts);
+                  }
+                }
               } catch (refreshError) {
-                console.warn("Error refreshing provider state:", refreshError);
+                console.warn("Error during periodic state refresh:", refreshError);
               }
             }
           }
@@ -1688,24 +1858,38 @@ export function BlockchainProvider({ children }) {
               if (typeof ethereumProvider.removeAllListeners === 'function') {
                 ethereumProvider.removeAllListeners(event);
                 console.log(`Removed all listeners for ${event}`);
+                return true;
               } else {
                 console.warn(`removeAllListeners method not available for ${event}`);
                 // Try to remove specific handlers we know about
                 if (event === 'accountsChanged') {
                   safeRemoveListener('accountsChanged', handleAccountsChanged);
+                  return true;
                 } else if (event === 'chainChanged') {
                   safeRemoveListener('chainChanged', handleChainChanged);
+                  return true;
                 }
               }
+              return false;
             } catch (error) {
               console.warn(`Error removing listeners for ${event}:`, error);
+              return false;
             }
           };
           
           // Use the same handler references to ensure proper cleanup
           console.log("Removing wallet event listeners");
-          safeRemoveAllListeners('accountsChanged');
-          safeRemoveAllListeners('chainChanged');
+          const accountsRemoved = safeRemoveAllListeners('accountsChanged');
+          const chainRemoved = safeRemoveAllListeners('chainChanged');
+          
+          // Log cleanup results
+          console.log("Wallet event listener cleanup results:", {
+            accountsChanged: accountsRemoved ? "success" : "failed",
+            chainChanged: chainRemoved ? "success" : "failed"
+          });
+          
+          // Reset stored status
+          window._walletEventListenersActive = false;
         }
       });
     } else {

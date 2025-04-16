@@ -136,7 +136,14 @@ const WalletConnect = () => {
               </Button>
               
               <Button
-                onClick={disconnectWallet}
+                onClick={() => {
+                  console.log("Disconnect wallet button clicked");
+                  try {
+                    disconnectWallet();
+                  } catch (error) {
+                    console.error("Error in disconnectWallet click handler:", error);
+                  }
+                }}
                 variant="destructive"
                 size="sm"
                 className="px-3 py-2 h-auto"
