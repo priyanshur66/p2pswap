@@ -109,12 +109,65 @@ export function BlockchainProvider({ children }) {
     if (window.ethereum) {
       try {
         console.log("Connecting wallet...");
-        const provider = new ethers.BrowserProvider(window.ethereum);
+        
+        // Force reset of any existing connections
+        if (isConnected) {
+          console.log("Resetting existing connection before reconnecting");
+          setProvider(null);
+          setSigner(null);
+          setSwapContract(null);
+          setAccount(null);
+          setIsConnected(false);
+        }
+        
+        // Create new provider with retry logic for sandboxed environments
+        let provider;
+        let retryCount = 0;
+        
+        while (retryCount < 3) {
+          try {
+            provider = new ethers.BrowserProvider(window.ethereum);
+            break;
+          } catch (providerError) {
+            console.warn(`Provider creation attempt ${retryCount + 1} failed:`, providerError);
+            retryCount++;
+            if (retryCount >= 3) throw providerError;
+            await new Promise(r => setTimeout(r, 500)); // Wait 500ms before retry
+          }
+        }
+        
         const network = await provider.getNetwork();
         setChainId(network.chainId);
         
-        const accounts = await provider.send("eth_requestAccounts", []);
-        const signer = await provider.getSigner();
+        // Request accounts with explicit error handling for sandboxed environments
+        let accounts;
+        try {
+          accounts = await provider.send("eth_requestAccounts", []);
+        } catch (accountsError) {
+          console.warn("eth_requestAccounts failed, trying alternate method:", accountsError);
+          accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        }
+        
+        if (!accounts || accounts.length === 0) {
+          throw new Error("No accounts returned after wallet connection request");
+        }
+        
+        // Create signer with retry logic
+        let signer;
+        retryCount = 0;
+        
+        while (retryCount < 3) {
+          try {
+            signer = await provider.getSigner();
+            break;
+          } catch (signerError) {
+            console.warn(`Signer creation attempt ${retryCount + 1} failed:`, signerError);
+            retryCount++;
+            if (retryCount >= 3) throw signerError;
+            await new Promise(r => setTimeout(r, 500)); // Wait 500ms before retry
+          }
+        }
+        
         const swapContract = new ethers.Contract(swapAddress, swapAbi, signer);
         
         // Set state
@@ -1356,13 +1409,23 @@ export function BlockchainProvider({ children }) {
       const accountPoll = setInterval(async () => {
         try {
           if (window.ethereum) {
+            // Check for accounts
             const accounts = await window.ethereum.request({ method: 'eth_accounts' });
-            // Only proceed if we have accounts
+            
+            // Check for network/chain
+            let currentChainId;
+            try {
+              currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
+            } catch (chainError) {
+              console.warn("Failed to get chainId directly:", chainError);
+            }
+            
+            // Account change detection
             if (accounts && accounts.length > 0) {
               const currentMetaMaskAccount = accounts[0];
               const currentAppAccount = account;
               
-              // Check if there's a mismatch between MetaMask's active account and our app state
+              // Check if there's a mismatch between wallet's active account and our app state
               if (currentMetaMaskAccount && 
                   currentAppAccount && 
                   currentMetaMaskAccount.toLowerCase() !== currentAppAccount.toLowerCase()) {
@@ -1376,13 +1439,47 @@ export function BlockchainProvider({ children }) {
                 handleAccountsChanged(accounts);
               }
             } else if (account && accounts.length === 0) {
-              // User disconnected all accounts in MetaMask
-              console.log("All accounts disconnected in MetaMask");
+              // User disconnected all accounts in wallet
+              console.log("All accounts disconnected in wallet");
               disconnectWallet();
+            }
+            
+            // Network change detection
+            if (currentChainId && chainId && currentChainId !== chainId.toString()) {
+              console.log("Chain change detected via polling", {
+                appChainId: chainId,
+                walletChainId: currentChainId
+              });
+              
+              // Handle chain change similar to the event handler
+              window.location.reload();
+            }
+            
+            // Force refresh provider state every 10 polls if connected
+            // This helps in sandboxed environments where events might not propagate
+            if (isConnected && account && (Date.now() % 10000 < 1000)) {
+              try {
+                const provider = new ethers.BrowserProvider(window.ethereum);
+                const network = await provider.getNetwork();
+                
+                // Only update if necessary
+                if (network.chainId.toString() !== chainId?.toString()) {
+                  console.log("Updating chain ID during periodic check", {
+                    oldChainId: chainId,
+                    newChainId: network.chainId
+                  });
+                  setChainId(network.chainId);
+                }
+                
+                // Verify signer is still valid
+                verifySigner().catch(console.error);
+              } catch (refreshError) {
+                console.warn("Error refreshing provider state:", refreshError);
+              }
             }
           }
         } catch (error) {
-          console.error("Error in account polling:", error);
+          console.error("Error in account/network polling:", error);
         }
       }, 1000); // Check every second
       

@@ -15,8 +15,10 @@ const WalletConnect = () => {
   } = useBlockchain();
 
   const [networkName, setNetworkName] = useState(null);
+  const [lastRefresh, setLastRefresh] = useState(Date.now());
 
   useEffect(() => {
+    // Refresh network info whenever connection state or chainId changes
     if (isConnected) {
       getCurrentNetwork().then(network => {
         if (network) {
@@ -25,6 +27,26 @@ const WalletConnect = () => {
       });
     }
   }, [isConnected, chainId, getCurrentNetwork]);
+
+  // Additional polling for sandboxed environments
+  useEffect(() => {
+    if (!isConnected) return;
+    
+    // Set up a refresh interval that runs more frequently in sandboxed environments
+    const refreshInterval = setInterval(() => {
+      // Only refresh if it's been more than 3 seconds since last refresh
+      if (Date.now() - lastRefresh > 3000) {
+        getCurrentNetwork().then(network => {
+          if (network) {
+            setNetworkName(network.name);
+          }
+          setLastRefresh(Date.now());
+        });
+      }
+    }, 2000);
+    
+    return () => clearInterval(refreshInterval);
+  }, [isConnected, getCurrentNetwork, lastRefresh]);
 
   const formatAddress = (address) => {
     if (!address) return '';
