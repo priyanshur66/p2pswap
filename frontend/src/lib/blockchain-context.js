@@ -25,69 +25,131 @@ export function BlockchainProvider({ children }) {
   const handleAccountsChanged = async (accounts) => {
     console.log("Accounts changed:", accounts);
     
-    // Get the current account from state for comparison
-    const currentAccount = account;
-    const newAccount = accounts && accounts.length > 0 ? accounts[0] : null;
-    
-    // Check if this is a real account change
-    if (newAccount && currentAccount && 
-        newAccount.toLowerCase() === currentAccount.toLowerCase()) {
-      console.log("Same account detected, no need to reinitialize");
+    // Force disconnect if no accounts available
+    if (!accounts || accounts.length === 0) {
+      console.log("No accounts available, disconnecting");
+      await disconnectWallet();
       return;
     }
     
-    // Immediately clear events when account changes
-    setEvents([]);
-    
-    if (accounts.length > 0) {
-      // Completely reinitialize everything when account changes
-      try {
-        console.log("Reinitializing provider, signer, and contract for new account");
-        
-        // Create a fresh provider
-        const newProvider = new ethers.BrowserProvider(window.ethereum);
-        
-        // Get network
-        const network = await newProvider.getNetwork();
-        setChainId(network.chainId);
-        
-        // Create a fresh signer for the new account
-        const newSigner = await newProvider.getSigner();
-        
-        // Create a fresh contract
-        const newSwapContract = new ethers.Contract(swapAddress, swapAbi, newSigner);
-        
-        // Set all state
-        setProvider(newProvider);
-        setSigner(newSigner);
-        setSwapContract(newSwapContract);
-        setAccount(accounts[0]);
-        setIsConnected(true); // Make sure to set isConnected to true
-        
-        console.log("New signer address:", await newSigner.getAddress());
-        console.log("Updated state with new account:", accounts[0]);
-        
-        // Set up fresh event listeners with the new contract
-        listenForEvents(newSwapContract);
-        
-        // Fetch past events for the new account
-        fetchPastEvents(newSwapContract)
-          .then(pastEvents => {
-            if (pastEvents && pastEvents.length > 0) {
-              console.log(`Setting ${pastEvents.length} events after account change`);
-              setEvents(pastEvents);
-            }
-          })
-          .catch(error => {
-            console.error("Error fetching events after account change:", error);
-          });
-      } catch (error) {
-        console.error("Error reinitializing after account change:", error);
-        // In case of critical failure, try to disconnect
-        disconnectWallet();
+    try {
+      // Make sure we're dealing with addresses in a consistent format
+      let newAccount;
+      
+      // Handle the case where account might be an object with address property (from provider.listAccounts())
+      if (typeof accounts[0] === 'object' && accounts[0].address) {
+        newAccount = accounts[0].address;
+      } else if (typeof accounts[0] === 'string') {
+        newAccount = accounts[0];
+      } else {
+        console.error("Unknown account format:", accounts[0]);
+        return;
       }
-    } else {
-      disconnectWallet();
+      
+      // Normalize account format (lowercase for comparison)
+      newAccount = newAccount.toLowerCase();
+      const currentAccount = account ? account.toLowerCase() : null;
+      
+      // Check if this is a real account change
+      if (newAccount && currentAccount && newAccount === currentAccount) {
+        console.log("Same account detected, no need to reinitialize");
+        return;
+      }
+      
+      console.log("Real account change detected", {
+        from: currentAccount,
+        to: newAccount
+      });
+      
+      // Immediately clear events when account changes
+      setEvents([]);
+      
+      // Create a fresh provider with retry logic
+      let newProvider;
+      let retryCount = 0;
+      
+      while (retryCount < 3) {
+        try {
+          newProvider = new ethers.BrowserProvider(window.ethereum);
+          break;
+        } catch (providerError) {
+          console.warn(`Provider creation attempt ${retryCount + 1} failed:`, providerError);
+          retryCount++;
+          if (retryCount >= 3) throw providerError;
+          await new Promise(r => setTimeout(r, 500)); // Wait 500ms before retry
+        }
+      }
+      
+      // Get network
+      const network = await newProvider.getNetwork();
+      setChainId(network.chainId);
+      
+      // Create a fresh signer for the new account
+      let newSigner;
+      retryCount = 0;
+      
+      while (retryCount < 3) {
+        try {
+          newSigner = await newProvider.getSigner(newAccount);
+          break;
+        } catch (signerError) {
+          // Try to get the default signer instead
+          try {
+            console.warn(`Failed to get signer for specific account, trying default signer`);
+            newSigner = await newProvider.getSigner();
+            break;
+          } catch (defaultSignerError) {
+            console.warn(`Default signer attempt ${retryCount + 1} failed:`, defaultSignerError);
+            retryCount++;
+            if (retryCount >= 3) throw defaultSignerError;
+            await new Promise(r => setTimeout(r, 500)); // Wait 500ms before retry
+          }
+        }
+      }
+      
+      // Verify the signer address matches our expected account
+      const actualSignerAddress = await newSigner.getAddress();
+      const actualAccount = actualSignerAddress.toLowerCase();
+      
+      // If there's a mismatch, log it but continue (we'll use whatever account the wallet gives us)
+      if (actualAccount !== newAccount) {
+        console.warn("Signer address doesn't match requested account:", {
+          requested: newAccount,
+          actual: actualAccount
+        });
+      }
+      
+      // Create a fresh contract
+      const newSwapContract = new ethers.Contract(swapAddress, swapAbi, newSigner);
+      
+      // Set all state with the actual signer account
+      setProvider(newProvider);
+      setSigner(newSigner);
+      setSwapContract(newSwapContract);
+      setAccount(actualSignerAddress);
+      setIsConnected(true);
+      
+      console.log("Connection established with account:", actualSignerAddress);
+      
+      // Set up fresh event listeners with the new contract
+      listenForEvents(newSwapContract);
+      
+      // Fetch past events for the new account
+      fetchPastEvents(newSwapContract)
+        .then(pastEvents => {
+          if (pastEvents && pastEvents.length > 0) {
+            console.log(`Setting ${pastEvents.length} events after account change`);
+            setEvents(pastEvents);
+          }
+        })
+        .catch(error => {
+          console.error("Error fetching events after account change:", error);
+        });
+      
+    } catch (error) {
+      console.error("Error reinitializing after account change:", error);
+      // In case of critical failure, try to disconnect
+      await disconnectWallet();
     }
   };
 
@@ -96,33 +158,55 @@ export function BlockchainProvider({ children }) {
     console.log("Chain changed to:", _chainId);
     
     try {
-      // Get chain ID in a normalized format
-      const newChainId = typeof _chainId === 'string' && _chainId.startsWith('0x') 
-        ? BigInt(_chainId) 
-        : BigInt(_chainId);
-      
-      // If we have the current chain ID in state, compare to avoid unnecessary reloads
-      if (chainId) {
-        const currentChainIdBigInt = typeof chainId === 'bigint' ? chainId : BigInt(chainId.toString());
-        
-        if (newChainId === currentChainIdBigInt) {
-          console.log("Same chain detected, no need to reload");
-          return;
-        }
+      // In some container environments, chainId comes in different formats
+      // Normalize it to a string without the 0x prefix
+      let newChainIdString = String(_chainId || '');
+      if (newChainIdString.startsWith('0x')) {
+        // Convert from hex to decimal string
+        newChainIdString = BigInt(newChainIdString).toString();
       }
       
-      // Try to handle chain change gracefully instead of a full page reload
+      console.log("Chain ID normalized to:", newChainIdString);
+      
+      // Convert current chainId to comparable format
+      const currentChainIdString = chainId ? 
+        (typeof chainId === 'bigint' ? chainId.toString() : chainId.toString()) : '';
+      
+      // If the chain hasn't actually changed, avoid unnecessary reload
+      if (newChainIdString === currentChainIdString) {
+        console.log("Same chain detected, no need to reload");
+        return;
+      }
+      
+      // Try to update the chain ID in state first to avoid UI inconsistencies
       try {
-        console.log("Reinitializing provider and contracts for new chain");
-        
-        // Create fresh provider, signer and contract
-        const newProvider = new ethers.BrowserProvider(window.ethereum);
-        const network = await newProvider.getNetwork();
-        setChainId(network.chainId);
-        
-        // Only recreate signer and contract if we have an account
-        if (account) {
+        setChainId(BigInt(newChainIdString));
+      } catch (error) {
+        console.warn("Failed to update chainId in state:", error);
+      }
+      
+      // Create a fresh provider
+      console.log("Creating fresh provider for new chain");
+      const newProvider = new ethers.BrowserProvider(window.ethereum);
+      
+      // Get the current network info
+      const network = await newProvider.getNetwork();
+      console.log("Connected to network:", {
+        chainId: network.chainId.toString(),
+        name: network.name
+      });
+      
+      // Update chain ID in state to match what the provider reports
+      setChainId(network.chainId);
+      
+      // Only proceed with signer and contract updates if we have an account
+      if (account) {
+        try {
+          // Create a fresh signer for the current account
+          console.log("Creating fresh signer for account:", account);
           const newSigner = await newProvider.getSigner();
+          
+          // Create a fresh contract with the new signer
           const newSwapContract = new ethers.Contract(swapAddress, swapAbi, newSigner);
           
           // Update state
@@ -134,25 +218,33 @@ export function BlockchainProvider({ children }) {
           listenForEvents(newSwapContract);
           
           // Fetch past events for the new chain
-          fetchPastEvents(newSwapContract)
-            .then(pastEvents => {
-              setEvents(pastEvents || []);
-            })
-            .catch(console.error);
+          try {
+            console.log("Fetching events for new chain");
+            const pastEvents = await fetchPastEvents(newSwapContract);
+            setEvents(pastEvents || []);
+          } catch (eventsError) {
+            console.error("Error fetching events for new chain:", eventsError);
+            setEvents([]);
+          }
           
-          // Notify user
           toast({
             title: "Network Changed",
-            description: `Connected to ${network.name || 'new network'}`,
+            description: `Connected to ${network.name || 'chain ' + network.chainId}`,
           });
           
-          return;
+          return; // Successfully handled the chain change
+        } catch (error) {
+          console.error("Error reinitializing after chain change:", error);
         }
-      } catch (error) {
-        console.error("Error handling chain change gracefully, falling back to page reload:", error);
+      } else {
+        console.log("No account connected, updating provider only");
+        setProvider(newProvider);
+        setEvents([]);
+        return; // Successfully handled the chain change (partial)
       }
       
-      // If graceful handling fails, fall back to page reload
+      // If we couldn't handle it gracefully, reload the page
+      console.warn("Falling back to page reload for chain change");
       window.location.reload();
     } catch (error) {
       console.error("Error in chain change handler:", error);
@@ -303,6 +395,8 @@ export function BlockchainProvider({ children }) {
         setSwapContract(null);
         setAccount(null);
         setIsConnected(false);
+        setChainId(null);
+        setEvents([]);
       }
         
       // Create new provider with retry logic for sandboxed environments
@@ -321,16 +415,47 @@ export function BlockchainProvider({ children }) {
         }
       }
       
-      // Multiple methods to request accounts for different environments
-      const requestAccounts = async () => {
+      // Try multiple methods to request accounts in different environments
+      const getRequestedAccounts = async () => {
         const methods = [
-          // Standard method
-          async () => provider.send("eth_requestAccounts", []),
-          // Direct request method
-          async () => ethereumProvider.request({ method: 'eth_requestAccounts' }),
-          // Legacy web3 method
+          // Method 1: Use eth_requestAccounts directly on the provider
+          async () => {
+            console.log("Trying eth_requestAccounts on provider");
+            const accounts = await provider.send("eth_requestAccounts", []);
+            return Array.isArray(accounts) ? accounts : [];
+          },
+          
+          // Method 2: Use the request method on ethereum provider
+          async () => {
+            console.log("Trying request method with eth_requestAccounts");
+            const accounts = await ethereumProvider.request({ method: 'eth_requestAccounts' });
+            return Array.isArray(accounts) ? accounts : [];
+          },
+          
+          // Method 3: Use enable() for older providers
+          async () => {
+            if (typeof ethereumProvider.enable === 'function') {
+              console.log("Trying enable() method");
+              const accounts = await ethereumProvider.enable();
+              return Array.isArray(accounts) ? accounts : [];
+            }
+            throw new Error("enable() not available");
+          },
+          
+          // Method 4: Fall back to eth_accounts if request methods fail
+          async () => {
+            console.log("Falling back to eth_accounts");
+            const accounts = await provider.send("eth_accounts", []);
+            if (!accounts || accounts.length === 0) {
+              throw new Error("No accounts found with eth_accounts");
+            }
+            return accounts;
+          },
+          
+          // Method 5: Try legacy web3 as a last resort
           async () => {
             if (window.web3 && window.web3.eth && window.web3.eth.getAccounts) {
+              console.log("Trying legacy web3.eth.getAccounts");
               return new Promise((resolve, reject) => {
                 window.web3.eth.getAccounts((error, accounts) => {
                   if (error) reject(error);
@@ -339,16 +464,17 @@ export function BlockchainProvider({ children }) {
               });
             }
             throw new Error("Legacy web3 not available");
-          },
-          // Last resort - try to get already connected accounts
-          async () => ethereumProvider.request({ method: 'eth_accounts' })
+          }
         ];
         
         let lastError;
         for (const method of methods) {
           try {
             const accounts = await method();
-            if (accounts && accounts.length > 0) return accounts;
+            if (accounts && accounts.length > 0) {
+              console.log("Successfully got accounts:", accounts);
+              return accounts;
+            }
           } catch (error) {
             lastError = error;
             console.warn("Account request method failed, trying next method:", error);
@@ -358,17 +484,28 @@ export function BlockchainProvider({ children }) {
         throw lastError || new Error("All account request methods failed");
       };
       
-      // Try to get accounts
-      const accounts = await requestAccounts();
+      // Try to get accounts with permission request
+      const accounts = await getRequestedAccounts();
       
       if (!accounts || accounts.length === 0) {
         throw new Error("No accounts returned after wallet connection request");
       }
       
-      console.log("Successfully got accounts:", accounts);
+      // Normalize account format
+      const selectedAccount = accounts[0];
+      const normalizedAccount = typeof selectedAccount === 'object' && selectedAccount.address 
+        ? selectedAccount.address
+        : selectedAccount;
       
+      console.log("Selected account for connection:", normalizedAccount);
+      
+      // Get network information
       const network = await provider.getNetwork();
       setChainId(network.chainId);
+      console.log("Connected to network:", {
+        chainId: network.chainId.toString(),
+        name: network.name
+      });
       
       // Create signer with retry logic
       let signer;
@@ -376,7 +513,15 @@ export function BlockchainProvider({ children }) {
       
       while (retryCount < 3) {
         try {
-          signer = await provider.getSigner();
+          // Try to get signer for specific account first
+          try {
+            signer = await provider.getSigner(normalizedAccount);
+            console.log("Got signer for specific account");
+          } catch (specificError) {
+            console.warn("Failed to get signer for specific account, trying default");
+            signer = await provider.getSigner();
+            console.log("Got default signer");
+          }
           break;
         } catch (signerError) {
           console.warn(`Signer creation attempt ${retryCount + 1} failed:`, signerError);
@@ -386,13 +531,18 @@ export function BlockchainProvider({ children }) {
         }
       }
       
+      // Verify signer address to ensure we're using the right account
+      const signerAddress = await signer.getAddress();
+      console.log("Signer address:", signerAddress);
+      
+      // Create contract
       const swapContract = new ethers.Contract(swapAddress, swapAbi, signer);
       
       // Set state
       setProvider(provider);
       setSigner(signer);
       setSwapContract(swapContract);
-      setAccount(accounts[0]);
+      setAccount(signerAddress);
       setIsConnected(true);
 
       // Set up wallet event listeners after successful connection
@@ -400,7 +550,7 @@ export function BlockchainProvider({ children }) {
 
       toast({
         title: "Wallet Connected",
-        description: `Connected to ${accounts[0].substring(0, 6)}...${accounts[0].substring(38)}`,
+        description: `Connected to ${signerAddress.substring(0, 6)}...${signerAddress.substring(signerAddress.length - 4)}`,
       });
 
       // Set up event listeners after the state is updated
@@ -1735,111 +1885,166 @@ export function BlockchainProvider({ children }) {
       // For sandboxed environments, add polling to detect account changes
       const accountPoll = setInterval(async () => {
         try {
-          if (window.ethereum) {
-            // Check for accounts
-            let accounts;
-            let currentChainId;
-            
+          if (!window.ethereum) return;
+          
+          // Only poll actively if window is focused to reduce resource usage
+          if (typeof document !== 'undefined' && document.hidden) {
+            return;
+          }
+          
+          // Get current accounts from wallet
+          let accounts;
+          try {
+            // Try different methods to get accounts
             try {
-              // Get accounts
               accounts = await window.ethereum.request({ method: 'eth_accounts' });
-              
-              // Get current chain ID
-              currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
             } catch (requestError) {
-              console.warn("Error requesting account/chain data:", requestError);
-              return; // Skip this polling cycle if there's an error
-            }
-            
-            // Don't process further if we don't have the necessary data
-            if (!accounts) return;
-            
-            // Account change detection
-            if (accounts.length > 0) {
-              const currentMetaMaskAccount = accounts[0];
-              const currentAppAccount = account;
+              console.warn("eth_accounts request failed:", requestError);
               
-              // Check if there's a mismatch between wallet's active account and our app state
-              if (currentMetaMaskAccount && 
-                  currentAppAccount && 
-                  currentMetaMaskAccount.toLowerCase() !== currentAppAccount.toLowerCase()) {
-                
-                console.log("Account change detected via polling", {
-                  appAccount: currentAppAccount,
-                  metaMaskAccount: currentMetaMaskAccount
-                });
-                
-                // Use the handleAccountsChanged function to update the account
-                await handleAccountsChanged(accounts);
-              } else if (currentMetaMaskAccount && !currentAppAccount) {
-                // We have an account in wallet but not in app state (reconnection case)
-                console.log("Detected wallet account not in app state, reconnecting");
-                await handleAccountsChanged(accounts);
-              }
-            } else if (account && accounts.length === 0) {
-              // User disconnected all accounts in wallet
-              console.log("All accounts disconnected in wallet");
-              await disconnectWallet();
-            }
-            
-            // Network change detection
-            if (currentChainId && chainId) {
-              // Convert to comparable format (both BigInt)
-              const currentChainIdBigInt = typeof currentChainId === 'string' && currentChainId.startsWith('0x') 
-                ? BigInt(currentChainId) 
-                : BigInt(currentChainId);
-                
-              const appChainIdBigInt = typeof chainId === 'bigint' 
-                ? chainId 
-                : BigInt(chainId.toString());
-              
-              if (currentChainIdBigInt !== appChainIdBigInt) {
-                console.log("Chain change detected via polling", {
-                  appChainId: chainId.toString(),
-                  walletChainId: currentChainId
-                });
-                
-                // Handle chain change
-                await handleChainChanged(currentChainId);
-              }
-            }
-            
-            // Additional periodic state refresh - runs roughly every 10 seconds
-            // This helps maintain state consistency in container environments
-            if (isConnected && account && (Date.now() % 10000 < 1000)) {
+              // Fallback: try RPC method directly
               try {
-                console.log("Running periodic state verification");
-                
-                // Verify network
-                const provider = new ethers.BrowserProvider(window.ethereum);
-                const network = await provider.getNetwork();
-                
-                // Check if chain ID needs update
-                if (network.chainId.toString() !== chainId?.toString()) {
-                  console.log("Updating chain ID during periodic check", {
-                    oldChainId: chainId,
-                    newChainId: network.chainId
-                  });
-                  setChainId(network.chainId);
-                }
-                
-                // Verify signer matches current account
-                if (signer) {
+                accounts = await window.ethereum.send('eth_accounts', []);
+                accounts = accounts?.result || accounts;
+              } catch (rpcError) {
+                console.warn("eth_accounts RPC failed, using empty accounts:", rpcError);
+                accounts = [];
+              }
+            }
+          } catch (error) {
+            console.error("Failed to get accounts:", error);
+            return;
+          }
+          
+          // Handle case where accounts might be nested in a result object (some providers)
+          if (accounts && typeof accounts === 'object' && !Array.isArray(accounts) && accounts.result) {
+            accounts = accounts.result;
+          }
+          
+          // Ensure accounts is an array
+          if (!Array.isArray(accounts)) {
+            console.warn("Accounts is not an array:", accounts);
+            accounts = [];
+          }
+          
+          // Check for account changes
+          if (accounts.length > 0) {
+            const currentWalletAccount = accounts[0].toLowerCase();
+            const currentAppAccount = account ? account.toLowerCase() : null;
+            
+            // Case 1: Account in wallet doesn't match app state
+            if (currentWalletAccount && currentAppAccount && 
+                currentWalletAccount !== currentAppAccount) {
+              
+              console.log("Account change detected via polling:", {
+                walletAccount: currentWalletAccount,
+                appAccount: currentAppAccount
+              });
+              
+              await handleAccountsChanged(accounts);
+            } 
+            // Case 2: We have an account in wallet but not in app
+            else if (currentWalletAccount && !currentAppAccount && isConnected === false) {
+              console.log("Account available but not connected in app, reconnecting");
+              await handleAccountsChanged(accounts);
+            }
+            // Case 3: App thinks we're connected but we don't have the right account
+            else if (isConnected && currentAppAccount && !accounts.some(a => 
+              (typeof a === 'string' ? a.toLowerCase() : a?.toLowerCase?.()) === currentAppAccount)) {
+              console.log("Connected account no longer available in wallet", {
+                appAccount: currentAppAccount,
+                walletAccounts: accounts.map(a => typeof a === 'string' ? a.toLowerCase() : a)
+              });
+              await handleAccountsChanged(accounts);
+            }
+          } 
+          // Case 4: No accounts in wallet but app thinks we're connected
+          else if (account && isConnected) {
+            console.log("No accounts in wallet but app is connected, disconnecting");
+            await disconnectWallet();
+          }
+          
+          // Get current chain ID from wallet
+          let currentChainId;
+          try {
+            currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
+          } catch (chainError) {
+            try {
+              // Try fallback method
+              const chainResult = await window.ethereum.send('eth_chainId', []);
+              currentChainId = chainResult?.result || null;
+            } catch (fallbackError) {
+              console.warn("Failed to get chainId:", fallbackError);
+              currentChainId = null;
+            }
+          }
+          
+          // Handle chain ID changes if we have both current and app chain ID
+          if (currentChainId && chainId) {
+            // Normalize chain IDs for comparison
+            const walletChainIdString = String(currentChainId).startsWith('0x') 
+              ? BigInt(currentChainId).toString() 
+              : String(currentChainId);
+              
+            const appChainIdString = typeof chainId === 'bigint' 
+              ? chainId.toString() 
+              : String(chainId);
+            
+            // Check if chain has changed
+            if (walletChainIdString !== appChainIdString) {
+              console.log("Chain change detected via polling:", {
+                walletChainId: walletChainIdString,
+                appChainId: appChainIdString
+              });
+              
+              await handleChainChanged(currentChainId);
+            }
+          }
+          
+          // Periodic state verification (every ~10 seconds)
+          if (isConnected && account && Date.now() % 10000 < 1000) {
+            try {
+              console.log("Running periodic state verification check");
+              
+              // Verify signer matches account
+              if (signer) {
+                try {
                   const signerAddress = await signer.getAddress();
                   if (signerAddress.toLowerCase() !== account.toLowerCase()) {
-                    console.log("Signer address doesn't match current account, reinitializing");
+                    console.log("Signer/account mismatch detected in periodic check", {
+                      signer: signerAddress.toLowerCase(),
+                      account: account.toLowerCase()
+                    });
                     await handleAccountsChanged(accounts);
                   }
+                } catch (signerError) {
+                  console.warn("Error checking signer:", signerError);
                 }
-              } catch (refreshError) {
-                console.warn("Error during periodic state refresh:", refreshError);
               }
+              
+              // Verify we have the right provider network
+              try {
+                if (provider) {
+                  const network = await provider.getNetwork();
+                  if (network && network.chainId && chainId && 
+                      network.chainId.toString() !== chainId.toString()) {
+                    console.log("Chain ID mismatch detected in periodic check", {
+                      provider: network.chainId.toString(),
+                      app: chainId.toString()
+                    });
+                    setChainId(network.chainId);
+                  }
+                }
+              } catch (networkError) {
+                console.warn("Error checking network:", networkError);
+              }
+            } catch (verifyError) {
+              console.warn("Error in periodic verification:", verifyError);
             }
           }
         } catch (error) {
           console.error("Error in account/network polling:", error);
         }
-      }, 1000); // Check every second
+      }, 2000); // Check every 2 seconds (reduced frequency to save resources)
       
       // Add cleanup function for the polling interval
       cleanupFunctions.push(() => {
