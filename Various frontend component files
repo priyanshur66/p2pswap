@@ -1,0 +1,115 @@
+```javascript
+// Import necessary dependencies
+import React from 'react';
+import './styles.css';
+
+// Define a function to get the current theme
+function getTheme() {
+  // Check if the user has set a preferred theme
+  const preferredTheme = localStorage.getItem('theme');
+  if (preferredTheme) {
+    return preferredTheme;
+  }
+  // If not, use the system's theme
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+// Define a function to update the theme
+function updateTheme(theme) {
+  // Update the theme in local storage
+  localStorage.setItem('theme', theme);
+  // Update the theme in the document
+  document.documentElement.classList.remove('light', 'dark');
+  document.documentElement.classList.add(theme);
+}
+
+// Define a component that supports dark mode
+function DarkModeComponent() {
+  // Get the current theme
+  const theme = getTheme();
+
+  // Use the dark mode CSS variables and classes
+  const className = theme === 'dark' ? 'dark-mode' : 'light-mode';
+
+  // Render the component
+  return (
+    <div className={className}>
+      {/* Component content */}
+    </div>
+  );
+}
+
+// Define a function to handle theme changes
+function handleThemeChange() {
+  // Get the current theme
+  const theme = getTheme();
+  // Update the theme to the opposite theme
+  updateTheme(theme === 'dark' ? 'light' : 'dark');
+}
+
+// Define a component that allows the user to toggle the theme
+function ThemeToggle() {
+  // Render the component
+  return (
+    <button onClick={handleThemeChange}>
+      Toggle Theme
+    </button>
+  );
+}
+
+// Export the components
+export { DarkModeComponent, ThemeToggle };
+```
+
+```css
+/* styles.css */
+
+/* Define the light and dark themes */
+:root {
+  --background-color: #f0f0f0;
+  --text-color: #000;
+}
+
+.dark {
+  --background-color: #333;
+  --text-color: #fff;
+}
+
+/* Define the dark mode CSS variables and classes */
+.dark-mode {
+  background-color: var(--background-color);
+  color: var(--text-color);
+}
+
+.light-mode {
+  background-color: var(--background-color);
+  color: var(--text-color);
+}
+```
+
+```javascript
+// Example usage
+import React from 'react';
+import ReactDOM from 'react-dom';
+import { DarkModeComponent, ThemeToggle } from './DarkModeComponent';
+
+ReactDOM.render(
+  <React.StrictMode>
+    <DarkModeComponent />
+    <ThemeToggle />
+  </React.StrictMode>,
+  document.getElementById('root')
+);
+```
+
+```javascript
+// Error handling
+try {
+  // Code that might throw an error
+  const theme = getTheme();
+  updateTheme(theme);
+} catch (error) {
+  // Handle the error
+  console.error('Error updating theme:', error);
+}
+```

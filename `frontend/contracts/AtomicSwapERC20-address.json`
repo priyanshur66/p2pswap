@@ -1,0 +1,42 @@
+```javascript
+// Import necessary dependencies
+const fs = require('fs');
+const path = require('path');
+
+// Define a function to update blockchain-related components
+function updateBlockchainComponents() {
+  try {
+    // Define file paths
+    const abiFilePath = path.join(__dirname, 'frontend/contracts/AtomicSwapERC20-abi.json');
+    const addressFilePath = path.join(__dirname, 'frontend/contracts/AtomicSwapERC20-address.json');
+
+    // Read the ABI file
+    const abiFileContent = fs.readFileSync(abiFilePath, 'utf8');
+    const abiData = JSON.parse(abiFileContent);
+
+    // Read the address file
+    const addressFileContent = fs.readFileSync(addressFilePath, 'utf8');
+    const addressData = JSON.parse(addressFileContent);
+
+    // Update the blockchain-related components to support dark mode
+    // For this example, we'll assume that we need to add a 'darkMode' property to the ABI and address data
+    abiData.darkMode = true;
+    addressData.darkMode = true;
+
+    // Write the updated data back to the files
+    fs.writeFileSync(abiFilePath, JSON.stringify(abiData, null, 2));
+    fs.writeFileSync(addressFilePath, JSON.stringify(addressData, null, 2));
+
+    console.log('Blockchain-related components updated to support dark mode');
+  } catch (error) {
+    console.error('Error updating blockchain-related components:', error);
+  }
+}
+
+// Call the function to update the blockchain-related components
+updateBlockchainComponents();
+```
+
+Note: The provided code assumes that the `frontend/contracts/AtomicSwapERC20-abi.json` and `frontend/contracts/AtomicSwapERC20-address.json` files are in the same directory as the script. If they are located elsewhere, you'll need to update the file paths accordingly.
+
+Also, the code adds a `darkMode` property to the ABI and address data. You may need to modify this to fit your specific use case. Additionally, you might want to consider using a more robust method to handle the updates, such as using a configuration file or environment variables to determine whether to enable dark mode.
