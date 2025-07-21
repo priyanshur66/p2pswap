@@ -1,0 +1,142 @@
+frontend/next.config.mjs
+```javascript
+import { i18n } from './next-i18next.config';
+
+export default {
+  // Next.js configuration
+  i18n,
+  // Add theme support
+  experimental: {
+    theme: true,
+  },
+};
+```
+
+frontend/jsconfig.json
+```json
+{
+  "compilerOptions": {
+    "target": "es6",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "tsconfig": {
+      "noEmit": true
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules"]
+}
+```
+
+frontend/eslint.config.mjs
+```javascript
+module.exports = {
+  // ESLint configuration
+  env: {
+    browser: true,
+    es2021: true,
+  },
+  extends: [
+    'plugin:react/recommended',
+    'plugin:jsx-a11y/recommended',
+    'plugin:prettier/recommended',
+  ],
+  parserOptions: {
+    ecmaFeatures: {
+      jsx: true,
+    },
+    ecmaVersion: 12,
+    sourceType: 'module',
+  },
+  plugins: ['react', 'jsx-a11y', 'prettier'],
+  rules: {
+    // Ignore theme-related warnings
+    'react/forbid-component-props': ['off', { forbid: ['theme'] }],
+  },
+  settings: {
+    react: {
+      version: 'detect',
+    },
+  },
+};
+```
+
+frontend/components/ThemeToggle.js
+```javascript
+import React from 'react';
+
+const ThemeToggle = () => {
+  const [theme, setTheme] = React.useState('light');
+
+  const toggleTheme = () => {
+    const newTheme = theme === 'light' ? 'dark' : 'light';
+    setTheme(newTheme);
+    // Update document body class
+    document.body.classList.remove(theme);
+    document.body.classList.add(newTheme);
+    // Store theme preference in local storage
+    localStorage.setItem('theme', newTheme);
+  };
+
+  React.useEffect(() => {
+    const storedTheme = localStorage.getItem('theme');
+    if (storedTheme) {
+      setTheme(storedTheme);
+      document.body.classList.add(storedTheme);
+    }
+  }, []);
+
+  return (
+    <button onClick={toggleTheme}>
+      {theme === 'light' ? 'Switch to Dark Theme' : 'Switch to Light Theme'}
+    </button>
+  );
+};
+
+export default ThemeToggle;
+```
+
+frontend/pages/_app.js
+```javascript
+import React from 'react';
+import ThemeToggle from '../components/ThemeToggle';
+
+function MyApp({ Component, pageProps }) {
+  return (
+    <div>
+      <ThemeToggle />
+      <Component {...pageProps} />
+    </div>
+  );
+}
+
+export default MyApp;
+```
+
+frontend/styles/globals.css
+```css
+body {
+  background-color: #f9f9f9;
+  transition: background-color 0.3s ease;
+}
+
+body.dark {
+  background-color: #333;
+  color: #fff;
+}
+
+body.light {
+  background-color: #f9f9f9;
+  color: #333;
+}
+```

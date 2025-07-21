@@ -1,0 +1,127 @@
+```javascript
+// frontend/postcss.config.js
+const postcss = require('postcss');
+const postcssPresetEnv = require('postcss-preset-env');
+const postcssNested = require('postcss-nested');
+const postcssVariables = require('postcss-variables');
+
+module.exports = {
+  plugins: [
+    postcssVariables(),
+    postcssNested(),
+    postcssPresetEnv({
+      stage: 0,
+    }),
+  ],
+};
+
+// frontend/postcss.config.mjs
+import postcss from 'postcss';
+import postcssPresetEnv from 'postcss-preset-env';
+import postcssNested from 'postcss-nested';
+import postcssVariables from 'postcss-variables';
+
+export default {
+  plugins: [
+    postcssVariables(),
+    postcssNested(),
+    postcssPresetEnv({
+      stage: 0,
+    }),
+  ],
+};
+
+// frontend/components.json
+{
+  "darkMode": {
+    "enabled": false,
+    "colors": {
+      "primary": "#333",
+      "secondary": "#444",
+      "background": "#222",
+      "text": "#fff"
+    }
+  }
+}
+
+// frontend/public/file.svg
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="file-icon">
+  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="#fff" stroke="#fff" />
+  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="#fff" stroke="#fff" class="dark-mode" />
+</svg>
+
+// frontend/public/globe.svg
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="globe-icon">
+  <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z" fill="#fff" stroke="#fff" />
+  <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z" fill="#fff" stroke="#fff" class="dark-mode" />
+</svg>
+
+// frontend/styles.css
+:root {
+  --primary-color: #333;
+  --secondary-color: #444;
+  --background-color: #222;
+  --text-color: #fff;
+}
+
+.dark-mode {
+  --primary-color: #fff;
+  --secondary-color: #ccc;
+  --background-color: #333;
+  --text-color: #000;
+}
+
+.file-icon {
+  fill: var(--primary-color);
+  stroke: var(--primary-color);
+}
+
+.globe-icon {
+  fill: var(--primary-color);
+  stroke: var(--primary-color);
+}
+
+.dark-mode .file-icon {
+  fill: var(--primary-color);
+  stroke: var(--primary-color);
+}
+
+.dark-mode .globe-icon {
+  fill: var(--primary-color);
+  stroke: var(--primary-color);
+}
+
+// frontend/index.js
+import React from 'react';
+import ReactDOM from 'react-dom';
+import './styles.css';
+
+class App extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = {
+      darkMode: false,
+    };
+  }
+
+  toggleDarkMode = () => {
+    this.setState({
+      darkMode: !this.state.darkMode,
+    });
+  };
+
+  render() {
+    return (
+      <div className={this.state.darkMode ? 'dark-mode' : ''}>
+        <svg className="file-icon" />
+        <svg className="globe-icon" />
+        <button onClick={this.toggleDarkMode}>Toggle Dark Mode</button>
+      </div>
+    );
+  }
+}
+
+ReactDOM.render(<App />, document.getElementById('root'));
+```
